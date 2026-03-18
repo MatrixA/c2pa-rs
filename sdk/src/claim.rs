@@ -74,7 +74,7 @@ use crate::{
     log_item,
     resource_store::UriOrResource,
     salt::{DefaultSalt, SaltGenerator},
-    settings::Settings,
+    settings::{get_thread_local_settings, Settings},
     status_tracker::{ErrorBehavior, StatusTracker},
     store::StoreValidationInfo,
     utils::hash_utils::{hash_by_alg, vec_compare},
@@ -1427,6 +1427,15 @@ impl Claim {
         salt_generator: &impl SaltGenerator,
         add_as_created_assertion: bool,
     ) -> Result<C2PAAssertion> {
+        // Enforce the per-manifest assertion limit during signing to prevent
+        // resource exhaustion regardless of how the claim is constructed.
+        let max_assertions = get_thread_local_settings().builder.max_assertions;
+        if self.assertion_store.len() >= max_assertions {
+            return Err(Error::TooManyAssertions {
+                max: max_assertions,
+            });
+        }
+
         // make sure the assertion is valid
         let assertion = assertion_builder.to_assertion()?;
         let assertion_label = assertion.label();
@@ -4223,5 +4232,64 @@ pub mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_add_assertion_default_limit_in_claim() {
+        use crate::assertions::{Action, Actions};
+
+        let mut claim = Claim::new("test_default_assertion_limit", Some("test"), 2);
+        let actions = Actions::new().add_action(Action::new("c2pa.created"));
+
+        // 50 assertions must succeed with the default limit.
+        for _ in 0..50 {
+            claim
+                .add_assertion(&actions)
+                .expect("assertion should succeed within the default limit");
+        }
+
+        // The 51st must be rejected with the default limit of 50.
+        let err = claim
+            .add_assertion(&actions)
+            .expect_err("51st assertion should fail with TooManyAssertions");
+        assert!(
+            matches!(err, Error::TooManyAssertions { max: 50 }),
+            "expected TooManyAssertions {{ max: 50 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_add_assertion_limit_in_claim() {
+        use crate::{
+            assertions::{Action, Actions},
+            settings::Settings,
+        };
+
+        // Lower the per-manifest assertion limit to 2 for this test.
+        Settings::set_thread_local_value("builder.max_assertions", 2i64).unwrap();
+
+        let mut claim = Claim::new("test_assertion_limit", Some("test"), 2);
+        let actions = Actions::new().add_action(Action::new("c2pa.created"));
+
+        // First two assertions must succeed.
+        claim
+            .add_assertion(&actions)
+            .expect("first assertion should succeed");
+        claim
+            .add_assertion(&actions)
+            .expect("second assertion should succeed");
+
+        // Third assertion must be rejected.
+        let err = claim
+            .add_assertion(&actions)
+            .expect_err("third assertion should fail with TooManyAssertions");
+        assert!(
+            matches!(err, Error::TooManyAssertions { max: 2 }),
+            "expected TooManyAssertions {{ max: 2 }}, got {err:?}"
+        );
+
+        // Restore the default limit so this thread-local change does not
+        // bleed into other tests that may share this thread.
+        Settings::set_thread_local_value("builder.max_assertions", 50i64).unwrap();
     }
 }

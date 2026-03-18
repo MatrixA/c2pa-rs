@@ -73,7 +73,7 @@ use crate::{
     log_item,
     manifest_store_report::ManifestStoreReport,
     maybe_send_sync::MaybeSend,
-    settings::{builder::OcspFetchScope, Settings},
+    settings::{builder::OcspFetchScope, get_thread_local_settings, Settings},
     status_tracker::{ErrorBehavior, StatusTracker},
     utils::{
         hash_utils::HashRange,
@@ -1376,6 +1376,15 @@ impl Store {
                 .sbox;
 
             let num_assertions = assertion_store_box.data_box_count();
+
+            // Reject manifests that embed more assertions than the configured limit to
+            // prevent unbounded memory and CPU consumption on untrusted input.
+            let max_assertions = get_thread_local_settings().verify.max_assertions;
+            if num_assertions > max_assertions {
+                return Err(Error::TooManyAssertions {
+                    max: max_assertions,
+                });
+            }
 
             // loop over all assertions in assertion store...
             let mut check_for_legacy_assertion = true;
@@ -8656,5 +8665,103 @@ pub mod tests {
 
         // Verify that flush was called
         assert!(flush_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_verify_assertion_limit_in_store() {
+        use crate::settings::Settings;
+
+        let context = Context::new();
+        let (format, mut input_stream, mut output_stream) =
+            create_test_streams("earth_apollo17.jpg");
+
+        let mut store = Store::from_context(&context);
+        let cgi = ClaimGeneratorInfo::new("assertion_limit_test");
+
+        // create_editing_claim adds 2 assertions (Actions + Uuid).
+        let mut claim = Claim::new("limit_test", Some("test"), 1);
+        create_editing_claim(&mut claim).unwrap();
+        claim.add_claim_generator_info(cgi);
+
+        let signer = test_signer(SigningAlg::Ps256);
+        store.commit_claim(claim).unwrap();
+        store
+            .save_to_stream(
+                format,
+                &mut input_stream,
+                &mut output_stream,
+                signer.as_ref(),
+                &context,
+            )
+            .unwrap();
+
+        // Lower verify limit to 1; the manifest above contains 2 assertions.
+        Settings::set_thread_local_value("verify.max_assertions", 1i64).unwrap();
+
+        output_stream.rewind().unwrap();
+        let mut report = StatusTracker::default();
+        let result = Store::from_stream(format, &mut output_stream, &mut report, &context);
+
+        // Restore the default limit before asserting.
+        Settings::set_thread_local_value("verify.max_assertions", 50i64).unwrap();
+
+        assert!(
+            matches!(result, Err(Error::TooManyAssertions { max: 1 })),
+            "expected TooManyAssertions {{ max: 1 }}, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_verify_default_assertion_limit_in_store() {
+        use crate::{
+            assertions::{Action, Actions},
+            settings::Settings,
+        };
+
+        let context = Context::new();
+        let (format, mut input_stream, mut output_stream) =
+            create_test_streams("earth_apollo17.jpg");
+
+        // Raise the builder limit high enough to create 51 user assertions plus the
+        // extra assertions (e.g. DataHash) that save_to_stream adds during signing.
+        // The verify.max_assertions limit (50) is intentionally left at its default.
+        Settings::set_thread_local_value("builder.max_assertions", 60i64).unwrap();
+
+        let mut store = Store::from_context(&context);
+        let cgi = ClaimGeneratorInfo::new("default_verify_limit_test");
+        let mut claim = Claim::new("default_limit_test", Some("test"), 1);
+        let actions = Actions::new().add_action(Action::new("c2pa.created"));
+        for _ in 0..51 {
+            claim
+                .add_assertion(&actions)
+                .expect("assertion should succeed within the raised limit");
+        }
+        claim.add_claim_generator_info(cgi);
+
+        let signer = test_signer(SigningAlg::Ps256);
+        store.commit_claim(claim).unwrap();
+        store
+            .save_to_stream(
+                format,
+                &mut input_stream,
+                &mut output_stream,
+                signer.as_ref(),
+                &context,
+            )
+            .unwrap();
+
+        // Restore the builder limit to the default before parsing.
+        Settings::set_thread_local_value("builder.max_assertions", 50i64).unwrap();
+
+        // Parse with the default verify.max_assertions (50).
+        // The 51-assertion manifest must be rejected.
+        output_stream.rewind().unwrap();
+        let mut report = StatusTracker::default();
+        let result = Store::from_stream(format, &mut output_stream, &mut report, &context);
+
+        assert!(
+            matches!(result, Err(Error::TooManyAssertions { max: 50 })),
+            "expected TooManyAssertions {{ max: 50 }}, got {result:?}"
+        );
     }
 }

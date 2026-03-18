@@ -779,6 +779,12 @@ impl Builder {
         S: Into<String>,
         T: Serialize,
     {
+        let max_assertions = self.context.settings().builder.max_assertions;
+        if self.definition.assertions.len() >= max_assertions {
+            return Err(Error::TooManyAssertions {
+                max: max_assertions,
+            });
+        }
         let created = false;
         self.definition.assertions.push(AssertionDefinition {
             label: label.into(),
@@ -804,6 +810,12 @@ impl Builder {
         S: Into<String>,
         T: Serialize,
     {
+        let max_assertions = self.context.settings().builder.max_assertions;
+        if self.definition.assertions.len() >= max_assertions {
+            return Err(Error::TooManyAssertions {
+                max: max_assertions,
+            });
+        }
         let created = false;
         self.definition.assertions.push(AssertionDefinition {
             label: label.into(),
@@ -5771,6 +5783,47 @@ mod tests {
         }
 
         assert!(reader.active_manifest().is_some());
+    }
+
+    #[test]
+    fn test_add_assertion_limit() {
+        use crate::settings::Settings;
+
+        // Default limit is 50; verify the 50th assertion succeeds and the 51st is rejected.
+        let mut builder = Builder::new();
+        let data = serde_json::json!({"value": 1});
+        for i in 0..50 {
+            builder
+                .add_assertion_json(format!("org.test.assertion.{i}"), &data)
+                .expect("should succeed within limit");
+        }
+        let err = builder
+            .add_assertion_json("org.test.assertion.overflow", &data)
+            .expect_err("51st assertion should be rejected");
+        assert!(matches!(err, Error::TooManyAssertions { max: 50 }));
+
+        // Verify the limit is configurable: set max_assertions=2 via settings.
+        let settings = Settings {
+            builder: crate::settings::builder::BuilderSettings {
+                max_assertions: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let context = Context::new()
+            .with_settings(settings)
+            .expect("valid settings");
+        let mut builder = Builder::from_context(context);
+        builder
+            .add_assertion_json("org.test.a1", &data)
+            .expect("first assertion should succeed");
+        builder
+            .add_assertion_json("org.test.a2", &data)
+            .expect("second assertion should succeed");
+        let err = builder
+            .add_assertion_json("org.test.a3", &data)
+            .expect_err("third assertion should exceed limit of 2");
+        assert!(matches!(err, Error::TooManyAssertions { max: 2 }));
     }
 
     // Ensures that the future returned by `Builder::sign_async` implements `Send`, thus making it
