@@ -766,7 +766,14 @@ impl Builder {
 
     /// Adds a CBOR assertion to the manifest.
     /// In most cases, use this function instead of `add_assertion_json`, unless the assertion must be stored in JSON format.
-    ///
+    fn check_assertion_limit(&self) -> Result<()> {
+        let max = self.context.settings().builder.max_assertions;
+        if self.definition.assertions.len() >= max {
+            return Err(Error::TooManyAssertions { max });
+        }
+        Ok(())
+    }
+
     /// # Arguments
     /// * `label` - A label for the assertion.
     /// * `data` - The data for the assertion. The data can be any Serde-serializable type or an AssertionDefinition.
@@ -779,12 +786,7 @@ impl Builder {
         S: Into<String>,
         T: Serialize,
     {
-        let max_assertions = self.context.settings().builder.max_assertions;
-        if self.definition.assertions.len() >= max_assertions {
-            return Err(Error::TooManyAssertions {
-                max: max_assertions,
-            });
-        }
+        self.check_assertion_limit()?;
         let created = false;
         self.definition.assertions.push(AssertionDefinition {
             label: label.into(),
@@ -810,12 +812,7 @@ impl Builder {
         S: Into<String>,
         T: Serialize,
     {
-        let max_assertions = self.context.settings().builder.max_assertions;
-        if self.definition.assertions.len() >= max_assertions {
-            return Err(Error::TooManyAssertions {
-                max: max_assertions,
-            });
-        }
+        self.check_assertion_limit()?;
         let created = false;
         self.definition.assertions.push(AssertionDefinition {
             label: label.into(),
@@ -5787,8 +5784,6 @@ mod tests {
 
     #[test]
     fn test_add_assertion_limit() {
-        use crate::settings::Settings;
-
         // Default limit is 50; verify the 50th assertion succeeds and the 51st is rejected.
         let mut builder = Builder::new();
         let data = serde_json::json!({"value": 1});
@@ -5801,8 +5796,11 @@ mod tests {
             .add_assertion_json("org.test.assertion.overflow", &data)
             .expect_err("51st assertion should be rejected");
         assert!(matches!(err, Error::TooManyAssertions { max: 50 }));
+    }
 
-        // Verify the limit is configurable: set max_assertions=2 via settings.
+    #[test]
+    fn test_add_assertion_limit_is_configurable() {
+        let data = serde_json::json!({"value": 1});
         let settings = Settings {
             builder: crate::settings::builder::BuilderSettings {
                 max_assertions: 2,
