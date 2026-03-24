@@ -611,7 +611,7 @@ impl Default for BuilderSettings {
             prefer_box_hash: false,
             generate_c2pa_archive: Some(true),
             auto_timestamp_assertion: TimeStampSettings::default(),
-            max_assertions: 50,
+            max_assertions: crate::settings::MAX_ASSERTIONS,
         }
     }
 }

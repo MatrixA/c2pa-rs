@@ -110,11 +110,7 @@ pub(crate) struct StoreValidationInfo<'a> {
     pub certificate_statuses: HashMap<String, Vec<Vec<u8>>>, // list of certificate status assertions for each serial
 }
 
-/// Maximum number of assertions allowed when parsing an untrusted manifest.
-/// `from_jumbf_impl` does not receive a [`Context`][crate::Context], so a fixed constant is used
-/// rather than `Verify::max_assertions` from settings.  The settings field is kept for future use
-/// when context is properly propagated through the parsing path.
-const MAX_ASSERTIONS: usize = 50;
+use crate::settings::MAX_ASSERTIONS;
 
 /// A `Store` maintains a list of `Claim` structs.
 ///

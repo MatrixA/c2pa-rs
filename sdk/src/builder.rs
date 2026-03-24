@@ -3181,7 +3181,7 @@ mod tests {
         crypto::raw_signature::SigningAlg,
         hash_stream_by_alg,
         maybe_send_sync::MaybeSend,
-        settings::Settings,
+        settings::{Settings, MAX_ASSERTIONS},
         utils::{
             hash_utils::HashRange,
             test::{test_context, write_bmff_placeholder_stream, write_jpeg_placeholder_stream},
@@ -5784,18 +5784,23 @@ mod tests {
 
     #[test]
     fn test_add_assertion_limit() {
-        // Default limit is 50; verify the 50th assertion succeeds and the 51st is rejected.
+        // Verify all MAX_ASSERTIONS assertions succeed and the next one is rejected.
         let mut builder = Builder::new();
         let data = serde_json::json!({"value": 1});
-        for i in 0..50 {
+        for i in 0..MAX_ASSERTIONS {
             builder
                 .add_assertion_json(format!("org.test.assertion.{i}"), &data)
                 .expect("should succeed within limit");
         }
         let err = builder
             .add_assertion_json("org.test.assertion.overflow", &data)
-            .expect_err("51st assertion should be rejected");
-        assert!(matches!(err, Error::TooManyAssertions { max: 50 }));
+            .expect_err("assertion beyond limit should be rejected");
+        assert!(matches!(
+            err,
+            Error::TooManyAssertions {
+                max: MAX_ASSERTIONS
+            }
+        ));
     }
 
     #[test]
